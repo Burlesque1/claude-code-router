@@ -4787,10 +4787,19 @@ function healStaleCodexAuthCopy(profileFile) {
     // default even if the tokens match by coincidence.
     if (!sharedTokens || sharedTokens.refresh !== profileTokens.refresh) continue;
     try {
-      fs.rmSync(profileFile, { force: true });
-      fs.symlinkSync(sharedFile, profileFile);
+      // Symlink to a temp name first and rename over the copy: the replacement
+      // is atomic, so a symlink failure (e.g. Windows privileges) leaves the
+      // original file intact instead of deleting it and stranding the app with
+      // no login file at all.
+      const tmpFile = profileFile + ".ccr-heal-tmp";
+      fs.rmSync(tmpFile, { force: true });
+      fs.symlinkSync(sharedFile, tmpFile);
+      fs.renameSync(tmpFile, profileFile);
       log("codex_auth_stale_copy_healed", { profileFile, sharedFile });
     } catch (error) {
+      try {
+        fs.rmSync(profileFile + ".ccr-heal-tmp", { force: true });
+      } catch {}
       log("codex_auth_stale_copy_heal_error", { profileFile, error: formatError(error) });
     }
     return sharedFile;
