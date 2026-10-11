@@ -4730,8 +4730,15 @@ function loadChatGptAuth() {
     nonEmptyEnv("CODEXL_CODEX_INSTANCE_NAME") ||
     agentEnv("codex", "PROFILE");
   const seen = new Set();
+  // A real file at the profile home carrying the shared login's single-use
+  // refresh token is a stale copy, not a separate session: whichever side
+  // refreshes first invalidates the other (refresh_token_reused). Heal it into
+  // a symlink to the shared file so the app and the CLI read exactly one
+  // refresh chain, then load from the shared chain.
+  const profileAuthFile = path.join(codexRuntimeHome(), "auth.json");
+  const healedSharedAuthFile = healStaleCodexAuthCopy(profileAuthFile);
   for (const authFile of [
-    path.join(codexRuntimeHome(), "auth.json"),
+    healedSharedAuthFile || profileAuthFile,
     nonEmptyEnv("CCR_CODEX_CHATGPT_AUTH_FILE"),
     nonEmptyEnv("CODEXL_CODEX_CHATGPT_AUTH_FILE"),
     defaultCodexChatGptAuthFallback()
@@ -4742,6 +4749,53 @@ function loadChatGptAuth() {
     if (auth) return auth;
   }
   return virtualChatGptAuth(workspaceName);
+}
+
+function chatGptAuthTokens(authFile) {
+  const value = readJsonFile(authFile);
+  if (!value || !isPlainObject(value)) return undefined;
+  if (typeof value.auth_mode === "string" && value.auth_mode !== "chatgpt") return undefined;
+  const tokens = isPlainObject(value.tokens) ? value.tokens : undefined;
+  if (!tokens) return undefined;
+  return {
+    access: stringValue(tokens.access_token) || stringValue(tokens.accessToken),
+    refresh: stringValue(tokens.refresh_token) || stringValue(tokens.refreshToken)
+  };
+}
+
+function healStaleCodexAuthCopy(profileFile) {
+  try {
+    const stat = fs.lstatSync(profileFile);
+    if (stat.isSymbolicLink() || !stat.isFile()) return undefined;
+  } catch {
+    return undefined;
+  }
+  const profileTokens = chatGptAuthTokens(profileFile);
+  if (!profileTokens || !profileTokens.refresh) return undefined;
+  for (const sharedFile of [
+    nonEmptyEnv("CCR_CODEX_CHATGPT_AUTH_FILE"),
+    nonEmptyEnv("CODEXL_CODEX_CHATGPT_AUTH_FILE"),
+    defaultCodexChatGptAuthFallback()
+  ]) {
+    // Same normalized path guards against a misconfiguration that points the
+    // shared file at the profile file itself.
+    if (!sharedFile || path.resolve(sharedFile) === path.resolve(profileFile)) continue;
+    const sharedTokens = chatGptAuthTokens(sharedFile);
+    // A matching single-use refresh token is what marks the profile file as a
+    // copy of the shared session rather than an independent login; the app only
+    // reads CODEX_HOME/auth.json, so healing to the shared chain is the right
+    // default even if the tokens match by coincidence.
+    if (!sharedTokens || sharedTokens.refresh !== profileTokens.refresh) continue;
+    try {
+      fs.rmSync(profileFile, { force: true });
+      fs.symlinkSync(sharedFile, profileFile);
+      log("codex_auth_stale_copy_healed", { profileFile, sharedFile });
+    } catch (error) {
+      log("codex_auth_stale_copy_heal_error", { profileFile, error: formatError(error) });
+    }
+    return sharedFile;
+  }
+  return undefined;
 }
 
 function defaultCodexChatGptAuthFallback() {
