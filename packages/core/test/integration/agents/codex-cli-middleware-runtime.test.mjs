@@ -469,7 +469,7 @@ test("Codex app-server bridges the default codex ChatGPT login read-only", { ski
   assert.deepEqual(JSON.parse(readFileSync(path.join(defaultCodexHome, "auth.json"), "utf8")).tokens.refresh_token, "default-refresh");
 });
 
-test("Codex app-server preserves workspace routing surfaced by newer app-servers", { skip: process.platform === "win32" }, () => {
+test("Codex app-server drops workspace routing so the app keeps legacy routing", { skip: process.platform === "win32" }, () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ccr-runtime-workspace-routing-"));
   const runtimeFile = writeRuntimeScript(dir);
   const fakeCodex = path.join(dir, "fake-codex");
@@ -488,9 +488,9 @@ test("Codex app-server preserves workspace routing surfaced by newer app-servers
     "const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });",
     "input.on('line', (line) => {",
     "  const request = JSON.parse(line);",
-    "  const result = request.method === 'account/read'",
-    "    ? { account: { type: 'chatgpt', email: 'native@example.com', planType: 'pro' }, workspaceRouting: " + JSON.stringify(workspaceRouting) + ", requiresOpenaiAuth: true }",
-    "    : { authMethod: null, authToken: null, requiresOpenaiAuth: false };",
+    "  let result = { authMethod: null, authToken: null, requiresOpenaiAuth: false };",
+    "  if (request.method === 'account/read') result = { account: { type: 'chatgpt', email: 'native@example.com', planType: 'pro' }, workspaceRouting: " + JSON.stringify(workspaceRouting) + ", requiresOpenaiAuth: true };",
+    "  if (request.method === 'initialize') result = { userAgent: 'codex_cli_rs/0.161.0 (Mac OS 26.7.2; arm64) unknown (codex; 0.0.1)' };",
     "  process.stdout.write(JSON.stringify({ id: request.id, result }) + '\\n');",
     "});",
     ""
@@ -510,6 +510,7 @@ test("Codex app-server preserves workspace routing surfaced by newer app-servers
     },
     input: [
       JSON.stringify({ id: 1, method: "account/read", params: {} }),
+      JSON.stringify({ id: 2, method: "initialize", params: {} }),
       ""
     ].join("\n")
   });
@@ -518,9 +519,10 @@ test("Codex app-server preserves workspace routing surfaced by newer app-servers
   const responses = result.stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line));
   assert.deepEqual(responses[0].result, {
     account: { type: "chatgpt", account_id: "ccr-virtual-account", id: "ccr-virtual-account", email: "CCR Workspace", planType: "plus" },
-    workspaceRouting,
     requiresOpenaiAuth: true
   });
+  assert.equal("workspaceRouting" in responses[0].result, false);
+  assert.equal(responses[1].result.userAgent, "codex_cli_rs/0.154.0 (Mac OS 26.7.2; arm64) unknown (codex; 0.0.1)");
 });
 
 test("Codex app-server delegates public Git marketplaces and leaves account-private marketplaces empty", { skip: process.platform === "win32" }, () => {

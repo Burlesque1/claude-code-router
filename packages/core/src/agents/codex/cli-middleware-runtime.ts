@@ -621,6 +621,8 @@ function rewriteCodexStdoutLine(line, requestMap, chatGptAuth) {
   }
   if (request.method === "account/read") {
     value.result = codexAppAccountRead(chatGptAuth, value.result);
+  } else if (request.method === "initialize") {
+    value.result = codexAppInitialize(value.result);
   } else if (request.method === "getAuthStatus") {
     value.result = codexAppAuthStatus(chatGptAuth, request.includeToken, value.result);
   } else if (request.method === "thread/list") {
@@ -1010,7 +1012,7 @@ function trackRequestLine(line, requestMap, current) {
   if (!id || !method) return;
   const cwd = requestWorkspaceCwd(value, method);
   if (cwd) current.cwd = cwd;
-  if (!["account/read", "getAuthStatus", "thread/list", "config/read", "model/list", "plugin/list", "configRequirements/read"].includes(method)) return;
+  if (!["initialize", "account/read", "getAuthStatus", "thread/list", "config/read", "model/list", "plugin/list", "configRequirements/read"].includes(method)) return;
   const params = clone(value.params || {});
   if (method === "thread/list" && current.cwd && !params.codexlWorkspaceCwd) {
     params.codexlWorkspaceCwd = current.cwd;
@@ -4839,7 +4841,26 @@ function codexAppAccountRead(auth, existingResult) {
     planType: auth.planType || "unknown"
   };
   result.requiresOpenaiAuth = true;
+  // Drop workspaceRouting entirely rather than filling it in. The desktop app
+  // routes every desktop API call through "routing": "workspace" rewrites the
+  // origin onto workspaceRouting.backendOrigin (https://chatgpt.com), which
+  // bypasses the local responder and 404s, while "legacy" leaves the URL alone
+  // so it stays on CODEX_API_BASE_URL (http://localhost:8000) and the responder
+  // can proxy /wham/* to the real API. Only an absent field selects "legacy",
+  // and the real app-server reports null under a custom model provider.
+  delete result.workspaceRouting;
   return result;
+}
+
+// The app only takes that "legacy" path when the app-server reports a version
+// inside [0.141.0, 0.155.0-alpha.5); anything newer throws "Workspace routing is
+// unavailable for this account and app-server version". The bundled app-server is
+// newer, so report a version inside the window and leave the rest untouched.
+const CODEX_APP_REPORTED_VERSION = "0.154.0";
+
+function codexAppInitialize(existingResult) {
+  if (!isPlainObject(existingResult) || typeof existingResult.userAgent !== "string") return existingResult;
+  return { ...existingResult, userAgent: existingResult.userAgent.replace(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/, CODEX_APP_REPORTED_VERSION) };
 }
 
 function codexAppAuthStatus(auth, includeToken, existingResult) {
