@@ -3,20 +3,16 @@ import { createServer as createHttpServer, type IncomingHttpHeaders } from "node
 import path from "node:path";
 
 /**
- * Balance/usage endpoints the desktop app reads through the desktop API layer
- * (CODEX_API_BASE_URL). The virtual-account routes keep the workspace gate
- * hidden, but usage must stay real: the CCR-launched app attaches its real
- * ChatGPT OAuth to the loopback responder, so these paths are forwarded to the
- * real backend (same paths under its /backend-api prefix) and the app shows
- * the account's actual balance instead of a silent 404.
+ * Everything the app asks the desktop API layer (CODEX_API_BASE_URL) that no
+ * virtual-account route answers is forwarded to the real backend under its
+ * /backend-api prefix, with the request's own auth headers -- the CCR-launched
+ * app attaches its real ChatGPT OAuth to the loopback responder. The virtual
+ * routes keep the workspace gate hidden; everything else has to stay real, or
+ * the app renders the account's settings, plugins, connectors and model list
+ * empty next to a working balance.
  */
 const CODEX_USAGE_PROXY_BASE = "https://chatgpt.com/backend-api";
-const CODEX_USAGE_PROXY_PREFIXES = ["/wham/usage", "/wham/settings", "/wham/rate-limit-reset-credits", "/wham/profiles"];
 const HOP_BY_HOP_HEADERS = new Set(["host", "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"]);
-
-export function isCodexUsageProxyPath(pathname: string): boolean {
-  return CODEX_USAGE_PROXY_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
-}
 
 export type CodexVirtualRoute = {
   /** Literal pathname prefix match, checked against the request pathname. */
@@ -38,8 +34,8 @@ const VIRTUAL_ACCOUNT_ID = "ccr-virtual-account";
  * state fetched over the desktop API layer, which the stdio middleware cannot
  * reach. With CODEX_API_BASE_URL pointed at this responder (an official app
  * hook that also permits localhost), these routes keep that state healthy for
- * a virtual account. Anything not listed here is answered with a 404 and
- * recorded to the responder log so missing routes can be added deliberately.
+ * a virtual account. Every path not listed here is proxied to the real backend
+ * instead, so the app's other pages keep working.
  */
 export function codexVirtualAccountRoutes(): CodexVirtualRoute[] {
   return [
@@ -231,9 +227,9 @@ export function ensureCodexAppNetResponder(options: {
 /**
  * Loopback HTTP responder for the CCR-launched ChatGPT app. Pointed at via
  * the CODEX_API_BASE_URL environment variable (honored by the app's desktop
- * API URL builder), it serves the virtual-account routes locally and records
- * every other request for further route discovery. Balance/usage paths are
- * forwarded to the ChatGPT backend with the request's own auth headers.
+ * API URL builder), it serves the virtual-account routes locally and forwards
+ * every other request to the ChatGPT backend with the request's own auth
+ * headers, recording each one to the responder log.
  */
 export async function startCodexAppNetResponder(options: {
   listenPort: number;
@@ -260,10 +256,12 @@ export async function startCodexAppNetResponder(options: {
       }
       const requestBody = Buffer.concat(chunks).toString("utf8");
       const accountId = String(request.headers["chatgpt-account-id"] || VIRTUAL_ACCOUNT_ID);
-      const proxied = !route && isCodexUsageProxyPath(url.pathname);
-      if (proxied) {
+      if (!route) {
         try {
-          const upstream = await fetch(`${proxyBase}${url.pathname}${url.search}`, {
+          // The app talks to the bare origin, but a client that already uses the
+          // backend's own prefix must not get it twice.
+          const upstreamPath = url.pathname.startsWith("/backend-api/") ? url.pathname.slice("/backend-api".length) : url.pathname;
+          const upstream = await fetch(`${proxyBase}${upstreamPath}${url.search}`, {
             method: request.method,
             headers: codexUsageProxyRequestHeaders(request.headers),
             body: request.method === "GET" || request.method === "HEAD" ? undefined : requestBody
@@ -286,26 +284,20 @@ export async function startCodexAppNetResponder(options: {
         return;
       }
       await appendResponderLog(logPath, {
-        event: route ? "virtual-response" : "not-found",
+        event: "virtual-response",
         method: request.method,
         host: request.headers.host,
         url: url.pathname,
         accountId,
         body: requestBody ? requestBody.slice(0, 4096) : undefined
       });
-      if (route) {
-        const body = JSON.stringify(route.bodyFor ? route.bodyFor({ accountId }) : route.body);
-        response.writeHead(200, {
-          "content-type": "application/json",
-          "content-length": String(Buffer.byteLength(body)),
-          ...(route.headers || {})
-        });
-        response.end(body);
-      } else {
-        const body = JSON.stringify({ error: "ccr-net-responder", path: url.pathname });
-        response.writeHead(404, { "content-type": "application/json" });
-        response.end(body);
-      }
+      const body = JSON.stringify(route.bodyFor ? route.bodyFor({ accountId }) : route.body);
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(body)),
+        ...(route.headers || {})
+      });
+      response.end(body);
     })().catch(() => {
       response.destroy();
     });

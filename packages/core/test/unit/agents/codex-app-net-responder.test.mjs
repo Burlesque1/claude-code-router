@@ -92,7 +92,7 @@ test("virtual account responses keep the workspace policy machinery hidden", () 
   assert.equal(accounts?.accounts?.[0]?.id, "acct-9");
 });
 
-test("responder serves virtual routes over loopback HTTP and records misses", async () => {
+test("responder serves virtual routes over loopback HTTP", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ccr-net-responder-"));
   const logPath = path.join(dir, "responder.log");
   const responder = await startCodexAppNetResponder({ listenPort: 0, logPath });
@@ -108,9 +108,6 @@ test("responder serves virtual routes over loopback HTTP and records misses", as
     assert.equal(settings.status, 200);
     assert.deepEqual((await settings.json()).beta_settings, []);
 
-    const missed = await fetch(`${responder.baseUrl}/wham/tasks`);
-    assert.equal(missed.status, 404);
-
     const devicecheck = await fetch(`${responder.baseUrl}/devicecheck`, { method: "POST", body: "{}" });
     assert.equal(devicecheck.status, 200);
     assert.match(devicecheck.headers.get("set-cookie") || "", /_devicecheck=ccr-virtual-device/);
@@ -121,10 +118,9 @@ test("responder serves virtual routes over loopback HTTP and records misses", as
   const entries = readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.ok(entries.some((entry) => entry.event === "responder-started"));
   assert.ok(entries.some((entry) => entry.event === "virtual-response" && entry.url === "/wham/accounts/check"));
-  assert.ok(entries.some((entry) => entry.event === "not-found" && entry.url === "/wham/tasks"));
 });
 
-test("usage and balance endpoints are proxied to the real backend with auth forwarded", async () => {
+test("every non-virtual route is proxied to the real backend with auth forwarded", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ccr-net-responder-proxy-"));
   const logPath = path.join(dir, "responder.log");
   let seen = null;
@@ -172,15 +168,27 @@ test("usage and balance endpoints are proxied to the real backend with auth forw
     assert.equal(settings.status, 200);
     assert.equal(seen.url, "/wham/settings/user");
 
-    const tasks = await fetch(`${responder.baseUrl}/wham/tasks`);
-    assert.equal(tasks.status, 404);
+    // A path no virtual route claims used to be answered with a local 404; it
+    // must now reach the backend like any other desktop API call.
+    const settingsPage = await fetch(`${responder.baseUrl}/settings/user`, {
+      headers: { authorization: "Bearer test-token", "chatgpt-account-id": "acct-9" }
+    });
+    assert.equal(settingsPage.status, 200);
+    assert.equal(seen.url, "/settings/user");
+
+    // The backend's own prefix must not be applied twice.
+    const prefixed = await fetch(`${responder.baseUrl}/backend-api/models`, {
+      headers: { authorization: "Bearer test-token" }
+    });
+    assert.equal(prefixed.status, 200);
+    assert.equal(seen.url, "/models");
   } finally {
     responder.close();
     upstream.close();
   }
   const entries = readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.ok(entries.some((entry) => entry.event === "proxied" && entry.url === "/wham/usage"));
-  assert.ok(entries.some((entry) => entry.event === "not-found" && entry.url === "/wham/tasks"));
+  assert.ok(entries.some((entry) => entry.event === "proxied" && entry.url === "/settings/user"));
 });
 
 test("codex app env points the desktop API base at the loopback responder", () => {
