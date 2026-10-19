@@ -687,9 +687,9 @@ test("compact handoff strips protocol-specific tool and schema constraints", asy
   assert.equal(forwarded.metadata.ccr_context_compact, undefined);
   assert.equal(forwarded.metadata.keep, "yes");
   assert.deepEqual(forwarded.text.format, { type: "text" });
-  assert.equal(forwarded.maxCompletionTokens, undefined);
-  assert.equal(forwarded.max_output_tokens, undefined);
-  assert.equal(forwarded.maxTokens, undefined);
+  assert.equal(forwarded.maxCompletionTokens, 32768);
+  assert.equal(forwarded.max_output_tokens, 32768);
+  assert.equal(forwarded.maxTokens, 32768);
   assert.equal(forwarded.input.length, 2);
   assert.match(forwarded.input.at(-1).content[0].text, /CCR compact handoff task/);
 });
