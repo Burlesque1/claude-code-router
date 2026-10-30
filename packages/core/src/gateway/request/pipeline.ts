@@ -900,18 +900,28 @@ export class GatewayRequestPipeline {
       ) {
         responseHeaders.delete("content-length");
       }
-      const rewriteAnthropicResponseModel = upstreamResponse.ok && shouldRewriteAnthropicMessageStartModel({
-        contentType: responseHeaders.get("content-type") ?? undefined,
-        model: clientVisibleResponseModel,
-        protocol: responseProtocol
-      });
+      // Response-model policy (gateway.responseModelPolicy) controls whether the
+      // body `model` carries the client-visible (requested) model or the serving
+      // endpoint's real model. "rewrite" (default) is the backward-compatible
+      // behavior on both protocols; "passthrough" keeps the upstream model name.
+      const responseModelPolicy = this.config.gateway?.responseModelPolicy ?? "rewrite";
+      const shouldRewriteResponseModel = responseModelPolicy === "rewrite";
+      const rewriteAnthropicResponseModel = upstreamResponse.ok &&
+        shouldRewriteResponseModel &&
+        shouldRewriteAnthropicMessageStartModel({
+          contentType: responseHeaders.get("content-type") ?? undefined,
+          model: clientVisibleResponseModel,
+          protocol: responseProtocol
+        });
       // OpenAI-protocol paths otherwise echo the serving endpoint's own model,
       // so a fallback leg would report its model instead of the requested one.
-      const rewriteOpenAiResponseModel = upstreamResponse.ok && shouldRewriteOpenAiResponseModel({
-        contentType: responseHeaders.get("content-type") ?? undefined,
-        model: clientVisibleResponseModel,
-        protocol: responseProtocol
-      });
+      const rewriteOpenAiResponseModel = upstreamResponse.ok &&
+        shouldRewriteResponseModel &&
+        shouldRewriteOpenAiResponseModel({
+          contentType: responseHeaders.get("content-type") ?? undefined,
+          model: clientVisibleResponseModel,
+          protocol: responseProtocol
+        });
       if (codexApplyPatchBridgeActive || codexMultiAgentBridgeActive || appendContextArchiveFooter || transformCodexCompactResponse || rewriteAnthropicResponseModel || rewriteOpenAiResponseModel) {
         responseHeaders.delete("content-length");
       }
